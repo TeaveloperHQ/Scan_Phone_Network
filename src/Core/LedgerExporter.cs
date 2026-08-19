@@ -32,7 +32,7 @@ public static class LedgerExporter
             sb.Append(i).Append(',')
               .Append(Csv(net)).Append(',')
               .Append(Csv(CsvExporter.CategoryKo(h.Category))).Append(',')
-              .Append(Csv(h.Hostname ?? "")).Append(',')
+              .Append(Csv(LedgerName(h))).Append(',')
               .Append(Csv(h.Ip.ToString())).Append(',')
               .Append(Csv(h.Mac ?? "")).Append(',')
               .Append(Csv(CsvExporter.VendorModel(h))).Append(',')
@@ -44,6 +44,16 @@ public static class LedgerExporter
             File.AppendAllText(path, sb.ToString(), new UTF8Encoding(false));
         else
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true)); // BOM (엑셀 한글)
+    }
+
+    /// <summary>
+    /// 대장에 적을 PC 이름. 같은 이름을 다른 장비도 쓰고 있으면 뒤에 표시를 붙인다.
+    /// (열을 늘리지 않아 기존 대장 파일에 계속 이어 붙일 수 있다)
+    /// </summary>
+    private static string LedgerName(DiscoveredHost h)
+    {
+        string name = h.Hostname ?? "";
+        return h.HasDuplicateName ? name + " (이름중복)" : name;
     }
 
     private static uint IpKey(IPAddress ip)
