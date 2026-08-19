@@ -148,6 +148,9 @@ public sealed class Scanner
         foreach (var h in hosts)
             Classifier.Classify(h, dhcpServers);
 
+        // 6-1) 결과 전체를 맞대봐야 보이는 이상(PC 이름 중복 등)
+        HostAnomalies.MarkDuplicateNames(hosts);
+
         report.Hosts.AddRange(hosts
             .OrderByDescending(h => h.Confidence)
             .ThenBy(h => NetworkInfo.ToUInt(h.Ip)));

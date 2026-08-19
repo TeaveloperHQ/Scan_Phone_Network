@@ -39,6 +39,12 @@ public sealed class DiscoveredHost
     /// <summary>분류 근거 (왜 그렇게 판단했는지).</summary>
     public List<string> Evidence { get; } = new();
 
+    /// <summary>같은 PC 이름을 쓰는 다른 장비들("IP · MAC"). 비어 있으면 중복 없음.</summary>
+    public List<string> NameConflicts { get; } = new();
+
+    /// <summary>PC 이름이 다른 장비와 겹침 = 관리대장에서 장비를 구분할 수 없는 상태.</summary>
+    public bool HasDuplicateName => NameConflicts.Count > 0;
+
     /// <summary>0~100 신뢰도.</summary>
     public int Confidence { get; set; }
 }

@@ -91,7 +91,12 @@ public partial class MainWindow : Window
         {
             int cross = violations.Count(v => v.Kind == ViolationKind.CrossLink);
             int dev = violations.Count(v => v.Kind == ViolationKind.UnauthorizedDevice);
-            SummaryText.Text = $"⚠ 이상 {violations.Count}건 (혼선 {cross} · 비인가 장비 {dev})";
+            int dupName = violations.Count(v => v.Kind == ViolationKind.NameConflict);
+            var parts = new List<string>();
+            if (cross > 0) parts.Add($"혼선 {cross}");
+            if (dev > 0) parts.Add($"비인가 장비 {dev}");
+            if (dupName > 0) parts.Add($"이름중복 {dupName}");
+            SummaryText.Text = $"⚠ 이상 {violations.Count}건 ({string.Join(" · ", parts)})";
         }
         else SummaryText.Text = "✅ 이상 없음";
 

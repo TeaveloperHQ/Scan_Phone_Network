@@ -85,6 +85,19 @@
             <DataGrid.Columns>
                 <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="120"/>
                 <DataGridTextColumn Header="PC이름" Binding="{Binding Hostname}" Width="150"/>
+                <DataGridTemplateColumn Header="경고" Width="100">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Border Background="{Binding BadgeBackground}" CornerRadius="9"
+                                    Padding="8,2" Margin="0,2" IsVisible="{Binding HasBadge}"
+                                    HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    ToolTip.Tip="{Binding BadgeTip}">
+                                <TextBlock Text="{Binding Badge}" Foreground="White"
+                                           FontSize="11" FontWeight="Bold"/>
+                            </Border>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="MAC" Binding="{Binding Mac}" Width="140"/>
                 <DataGridTextColumn Header="종류" Binding="{Binding Category}" Width="110"/>
                 <DataGridTextColumn Header="신뢰도%" Binding="{Binding Confidence}" Width="75"/>

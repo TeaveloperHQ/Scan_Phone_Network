@@ -25,7 +25,12 @@ public static class CsvExporter
             {
                 string sev = v.Severity switch
                 { Severity.Critical => "심각", Severity.Warning => "주의", _ => "정보" };
-                string kind = v.Kind == ViolationKind.CrossLink ? "혼선" : "비인가장비";
+                string kind = v.Kind switch
+                {
+                    ViolationKind.CrossLink => "혼선",
+                    ViolationKind.NameConflict => "이름중복",
+                    _ => "비인가장비",
+                };
                 foreach (var h in v.Hosts)
                 {
                     sb.Append(Csv(sev)).Append(',').Append(Csv(kind)).Append(',')

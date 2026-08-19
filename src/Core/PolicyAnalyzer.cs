@@ -7,6 +7,7 @@ public enum ViolationKind
 {
     CrossLink,           // 혼선 — 분리돼야 할 망끼리 연결됨
     UnauthorizedDevice,  // 비인가 장비 — 업무망에 무단 연결된 장비
+    NameConflict,        // 관리 이상 — PC 이름 중복으로 대장에서 장비 식별 불가
 }
 
 public enum Severity { Info, Warning, Critical }
@@ -92,6 +93,28 @@ public static class PolicyAnalyzer
             violations.Add(v);
         }
 
+        // 4) PC 이름 중복 = 관리대장에서 장비 구분 불가
+        var dupNames = report.Hosts
+            .Where(h => h.HasDuplicateName && h.Hostname is not null)
+            .GroupBy(h => h.Hostname!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
+        foreach (var g in dupNames)
+        {
+            var v = new PolicyViolation
+            {
+                Kind = ViolationKind.NameConflict,
+                Severity = Severity.Warning,
+                Title = $"PC 이름 중복: {g.Key} ({g.Count()}대)",
+                Principle = "IP 관리대장은 장비를 1:1로 식별할 수 있어야 함(PC 이름 중복 불가)",
+                Detail = "같은 PC 이름을 여러 대가 쓰고 있음. 복제 이미지로 설치한 뒤 이름을 바꾸지 않은 경우가 대부분이며, "
+                       + "이 상태로는 대장·접속 로그에서 어느 장비인지 구분되지 않는다.",
+                Action = "중복된 PC 중 한 대만 남기고 컴퓨터 이름 변경(설정 → 시스템 → 정보 → 이 PC의 이름 바꾸기). "
+                       + "대장 정리는 이름이 아니라 MAC 기준으로.",
+            };
+            v.Hosts.AddRange(g);
+            violations.Add(v);
+        }
+
         return violations
             .OrderByDescending(v => v.Severity)
             .ToList();
@@ -122,7 +145,12 @@ public static class PolicyAnalyzer
                 Severity.Warning => "[주의]",
                 _ => "[정보]",
             };
-            string kind = v.Kind == ViolationKind.CrossLink ? "혼선(망 간 연결)" : "비인가 장비 연결";
+            string kind = v.Kind switch
+            {
+                ViolationKind.CrossLink => "혼선(망 간 연결)",
+                ViolationKind.NameConflict => "관리 이상(PC 이름 중복)",
+                _ => "비인가 장비 연결",
+            };
             sb.AppendLine($"{n}. {sev} {v.Title}  · 유형: {kind}");
             sb.AppendLine($"   원칙: {v.Principle}");
             sb.AppendLine($"   상황: {v.Detail}");
