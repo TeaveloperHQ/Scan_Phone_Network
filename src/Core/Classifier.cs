@@ -5,7 +5,7 @@ namespace ScanPhoneNetwork;
 /// <summary>수집한 모든 신호를 합쳐 장비 종류와 신뢰도(0~100)를 판정.</summary>
 public static class Classifier
 {
-    public static void Classify(DiscoveredHost h, int? baselineTtl, IReadOnlySet<IPAddress>? dhcpServers)
+    public static void Classify(DiscoveredHost h, IReadOnlySet<IPAddress>? dhcpServers)
     {
         // 1) OUI 제조사
         var oui = OuiDatabase.Lookup(h.Mac);
@@ -78,10 +78,12 @@ public static class Classifier
         }
 
         // 6) TTL 추가 홉(NAT 뒤)
-        if (baselineTtl is int bl && h.Ttl is int t && t < bl)
+        //    출발 TTL 은 OS 마다 다르다(윈도우 128, 리눅스/프린터/스위치 64, 일부 장비 255).
+        //    따라서 "다른 호스트보다 낮은 TTL" 이 아니라 "자기 출발값에서 몇 칸 깎였나"로 봐야 한다.
+        if (h.Ttl is int t && HopCount(t) is int hops && hops > 0)
         {
             h.Confidence += 10;
-            h.Evidence.Add($"TTL {t} < 기준 {bl} → 추가 홉(라우팅 장비) 의심");
+            h.Evidence.Add($"TTL {t} → 라우터 {hops}홉 경유 → 중간 라우팅 장비(공유기) 의심");
         }
 
         // 7) 그 외 PC 이름이 잡힌 미상 장비 = 일반 PC (관리대장용)
@@ -92,5 +94,17 @@ public static class Classifier
         }
 
         if (h.Confidence > 100) h.Confidence = 100;
+    }
+
+    /// <summary>
+    /// 관측 TTL 로 경유한 라우터 홉 수를 추정. 출발 TTL 후보(64/128/255) 중
+    /// 관측값 이상인 가장 작은 값을 원래 값으로 보고 차이를 홉으로 센다.
+    /// 예) 64→0홉(같은 망), 63→1홉, 127→1홉.
+    /// </summary>
+    private static int? HopCount(int ttl)
+    {
+        if (ttl is <= 0 or > 255) return null;
+        int initial = ttl <= 64 ? 64 : ttl <= 128 ? 128 : 255;
+        return initial - ttl;
     }
 }

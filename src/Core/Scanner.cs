@@ -145,13 +145,12 @@ public sealed class Scanner
         }
 
         // 6) 분류
-        int? baseline = hosts.Where(h => h.Ttl is not null)
-            .GroupBy(h => h.Ttl).OrderByDescending(g => g.Count())
-            .FirstOrDefault()?.Key;
         foreach (var h in hosts)
-            Classifier.Classify(h, baseline, dhcpServers);
+            Classifier.Classify(h, dhcpServers);
 
-        report.Hosts.AddRange(hosts.OrderByDescending(h => h.Confidence));
+        report.Hosts.AddRange(hosts
+            .OrderByDescending(h => h.Confidence)
+            .ThenBy(h => NetworkInfo.ToUInt(h.Ip)));
         report.FinishedAt = DateTime.Now;
         return report;
     }

@@ -86,7 +86,8 @@ public static class NetworkInfo
     public static string NetworkBase(IPAddress ip, IPAddress mask) =>
         FromUInt(ToUInt(ip) & ToUInt(mask)).ToString();
 
-    private static uint ToUInt(IPAddress ip)
+    /// <summary>IPv4 를 정렬·비교용 32비트 값으로. (10.0.0.9 &lt; 10.0.1.1 이 성립)</summary>
+    public static uint ToUInt(IPAddress ip)
     {
         var b = ip.GetAddressBytes();
         return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];

@@ -36,7 +36,8 @@ public static class HostDiscovery
         });
 
         await Task.WhenAll(tasks);
-        return found.OrderBy(h => h.Ip.GetAddressBytes()[3]).ToList();
+        // 마지막 옥텟만 보면 /23·/22 처럼 3옥텟이 여러 개인 대역에서 순서가 섞인다.
+        return found.OrderBy(h => NetworkInfo.ToUInt(h.Ip)).ToList();
     }
 
     /// <summary>같은 L2 세그먼트 호스트의 MAC 을 SendARP 로 채운다 (Windows 전용).</summary>

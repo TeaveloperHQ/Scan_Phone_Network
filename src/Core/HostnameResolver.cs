@@ -10,6 +10,20 @@ namespace ScanPhoneNetwork;
 /// </summary>
 public static class HostnameResolver
 {
+    /// <summary>NetBIOS 이름은 해당 PC 의 ANSI 코드페이지로 인코딩된다.
+    /// 한글 컴퓨터 이름이 ? 로 깨지지 않도록 CP949 로 디코딩한다.</summary>
+    private static readonly Encoding NameEncoding = ResolveNameEncoding();
+
+    private static Encoding ResolveNameEncoding()
+    {
+        try
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            return Encoding.GetEncoding(949);   // CP949 = 한글 확장 EUC-KR
+        }
+        catch { return Encoding.ASCII; }        // 코드페이지 미지원 환경 대비
+    }
+
     public static async Task<string?> ResolveAsync(IPAddress ip, int timeoutMs = 700)
     {
         var nb = await NetbiosNameAsync(ip, timeoutMs);
@@ -68,7 +82,11 @@ public static class HostnameResolver
         for (int n = 0; n < count; n++)
         {
             if (off + 18 > buf.Length) break;
-            string name = Encoding.ASCII.GetString(buf, off, 15).TrimEnd();
+            // 이름은 공백(0x20)으로 15바이트까지 패딩된다. 패딩을 먼저 떼고 디코딩해야
+            // 한글 이름의 끝 바이트가 잘려 깨지지 않는다.
+            int nlen = 15;
+            while (nlen > 0 && (buf[off + nlen - 1] == 0x20 || buf[off + nlen - 1] == 0x00)) nlen--;
+            string name = NameEncoding.GetString(buf, off, nlen).Trim();
             byte suffix = buf[off + 15];
             int flags = (buf[off + 16] << 8) | buf[off + 17];
             bool isGroup = (flags & 0x8000) != 0;
