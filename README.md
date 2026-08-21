@@ -93,18 +93,6 @@ dotnet publish src/Gui/ScanPhoneNetwork.Gui.csproj -c Release -r win-x64 --self-
 # 결과: src/Gui/bin/Release/net8.0/win-x64/publish/업무망점검기.exe
 ```
 
-### 직접 빌드하지 않고 받기
-
-**개발 환경을 만들 필요가 없습니다.** GitHub 이 대신 빌드합니다.
-
-1. 저장소 상단 **Actions** 탭 → 최근 **빌드** 실행 클릭
-2. 아래 **Artifacts** 에서 `업무망점검기-GUI-win-x64` 내려받기
-3. 압축을 풀면 `업무망점검기.exe` 하나만 나옵니다
-
-.NET 런타임이 없는 PC 에서도 그대로 실행됩니다(런타임 포함, 약 43MB).
-직접 실행하려면 Actions 탭에서 **Run workflow** 를 눌러도 됩니다.
-
-버전 태그(`v1.0` 등)를 붙여 올리면 **Releases** 에도 자동으로 게시됩니다.
 
 ---
 
