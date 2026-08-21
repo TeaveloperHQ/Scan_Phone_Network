@@ -1,0 +1,74 @@
+name: 빌드
+
+# 배포용 exe 를 GitHub 에서 바로 만든다.
+# 개발 PC 에 .NET SDK 를 깔지 않아도 되고, 누가 빌드해도 같은 결과가 나온다.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:      # 저장소 Actions 탭에서 수동 실행
+
+jobs:
+  build:
+    # Avalonia GUI 를 win-x64 단일 파일로 내보내야 하므로 윈도우 러너를 쓴다.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: .NET SDK 준비
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 복원
+        run: dotnet restore
+
+      - name: 빌드
+        run: dotnet build -c Release --no-restore
+
+      - name: 자체 점검
+        # 망을 건드리지 않고 판정·보고 로직만 검사한다(합성 데이터).
+        # 실패하면 종료코드 1 이라 여기서 빌드가 멈춘다.
+        run: dotnet run --project src/Cli -c Release --no-build -- --selftest
+
+      - name: GUI 배포본 만들기 (단일 exe)
+        # 교사 PC 에 .NET 런타임이 없어도 실행되도록 self-contained 로 묶는다.
+        run: >
+          dotnet publish src/Gui/ScanPhoneNetwork.Gui.csproj
+          -c Release -r win-x64 --self-contained
+          -o publish/gui
+
+      - name: CLI 배포본 만들기 (단일 exe)
+        run: >
+          dotnet publish src/Cli/ScanPhoneNetwork.Cli.csproj
+          -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish/cli
+
+      - name: 결과물 올리기 (GUI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: 업무망점검기-GUI-win-x64
+          path: publish/gui/*.exe
+          if-no-files-found: error
+
+      - name: 결과물 올리기 (CLI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: 업무망점검기-CLI-win-x64
+          path: publish/cli/*.exe
+          if-no-files-found: error
+
+      # 태그를 붙여 올리면(v1.0 등) 릴리스로도 게시한다.
+      - name: 릴리스 게시
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/gui/*.exe
+            publish/cli/*.exe
+          generate_release_notes: true
