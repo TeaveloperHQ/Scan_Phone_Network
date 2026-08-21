@@ -98,9 +98,11 @@ public partial class MainWindow : Window
             int cross = violations.Count(v => v.Kind == ViolationKind.CrossLink);
             int dev = violations.Count(v => v.Kind == ViolationKind.UnauthorizedDevice);
             int dupName = violations.Count(v => v.Kind == ViolationKind.NameConflict);
+            int hotspot = violations.Count(v => v.Kind == ViolationKind.Hotspot);
             var parts = new List<string>();
             if (cross > 0) parts.Add($"혼선 {cross}");
             if (dev > 0) parts.Add($"비인가 장비 {dev}");
+            if (hotspot > 0) parts.Add($"PC 핫스팟 {hotspot}");
             if (dupName > 0) parts.Add($"이름중복 {dupName}");
             SummaryText.Text = $"⚠ 이상 {violations.Count}건 ({string.Join(" · ", parts)})";
         }

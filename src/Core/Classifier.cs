@@ -80,8 +80,10 @@ public static class Classifier
         // 6) TTL 추가 홉(NAT 뒤)
         //    출발 TTL 은 OS 마다 다르다(윈도우 128, 리눅스/프린터/스위치 64, 일부 장비 255).
         //    따라서 "다른 호스트보다 낮은 TTL" 이 아니라 "자기 출발값에서 몇 칸 깎였나"로 봐야 한다.
+        bool natHop = false;
         if (h.Ttl is int t && HopCount(t) is int hops && hops > 0)
         {
+            natHop = true;
             h.Confidence += 10;
             h.Evidence.Add($"TTL {t} → 라우터 {hops}홉 경유 → 중간 라우팅 장비(공유기) 의심");
         }
@@ -91,6 +93,22 @@ public static class Classifier
         {
             h.Category = DeviceCategory.Pc;
             h.Evidence.Add($"NetBIOS/DNS 이름 = {h.Hostname}");
+        }
+
+        // 8) PC 인데 공유기 신호가 같이 나오면 = 모바일 핫스팟(인터넷 연결 공유)
+        //
+        //    별도로 산 공유기를 꽂은 것과는 성격이 다르다. 교사 PC 가 자기 회선을
+        //    Wi-Fi 로 나눠 주고 있는 상태이고, 대개는 수업 때 켰다가 끄지 않은 것이다.
+        //    조치도 "장비를 뽑으세요"가 아니라 "기능을 끄세요"라서 따로 구분한다.
+        //
+        //    NetBIOS 이름이 잡혔다는 것 자체가 윈도우 PC 라는 뜻이므로,
+        //    거기에 공유기 신호가 겹치면 별도 장비가 아니라 그 PC 가 라우팅 중인 것이다.
+        bool looksLikePc = !string.IsNullOrEmpty(h.Hostname);
+        bool routerSignal = h.DhcpServer || h.SsdpGateway || natHop;
+        if (looksLikePc && routerSignal)
+        {
+            h.HotspotSuspected = true;
+            h.Evidence.Add($"PC({h.Hostname})인데 공유기 신호가 함께 나옴 → 모바일 핫스팟(인터넷 연결 공유) 의심");
         }
 
         if (h.Confidence > 100) h.Confidence = 100;

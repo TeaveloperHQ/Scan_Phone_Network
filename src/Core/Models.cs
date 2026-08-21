@@ -31,6 +31,13 @@ public sealed class DiscoveredHost
     /// <summary>DHCP OFFER 를 보냈는지 (무단 DHCP 서버 = 공유기 결정적 증거).</summary>
     public bool DhcpServer { get; set; }
 
+    /// <summary>
+    /// PC 로 식별됐는데 공유기 신호가 함께 나온 경우.
+    /// 별도로 산 공유기가 아니라 <b>PC 자체가 모바일 핫스팟(인터넷 연결 공유)</b>을
+    /// 켜 둔 상태다. 조치가 "장비를 뽑으세요"가 아니라 "기능을 끄세요"라서 구분한다.
+    /// </summary>
+    public bool HotspotSuspected { get; set; }
+
     /// <summary>HTTP/SIP 배너에서 추출한 부가 단서.</summary>
     public List<string> Banners { get; } = new();
 

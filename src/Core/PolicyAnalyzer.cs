@@ -8,6 +8,7 @@ public enum ViolationKind
     CrossLink,           // 혼선 — 분리돼야 할 망끼리 연결됨
     UnauthorizedDevice,  // 비인가 장비 — 업무망에 무단 연결된 장비
     NameConflict,        // 관리 이상 — PC 이름 중복으로 대장에서 장비 식별 불가
+    Hotspot,             // PC 가 모바일 핫스팟을 켜 둠 — 장비가 아니라 기능 문제
 }
 
 public enum Severity { Info, Warning, Critical }
@@ -36,8 +37,10 @@ public static class PolicyAnalyzer
         var violations = new List<PolicyViolation>();
 
         // 1) 무선/공유기 장비 = 비인가 장비 (업무망 무선 연결 금지 위반)
+        // 핫스팟(=PC 기능)은 아래에서 따로 다룬다. 조치가 다르기 때문이다.
         var wireless = report.Hosts
             .Where(h => h.Category is DeviceCategory.Router or DeviceCategory.WirelessAp)
+            .Where(h => !h.HotspotSuspected)
             .ToList();
         foreach (var h in wireless)
         {
@@ -90,6 +93,34 @@ public static class PolicyAnalyzer
                 Action = "전화기 연결 포트가 전화망인지 확인 → 업무망과 분리",
             };
             v.Hosts.AddRange(phones);
+            violations.Add(v);
+        }
+
+        // 3-1) PC 가 모바일 핫스팟을 켜 둔 경우
+        //      장비를 새로 꽂은 게 아니라 PC 기능이 켜져 있는 것이라 조치가 다르다.
+        var hotspots = report.Hosts.Where(h => h.HotspotSuspected).ToList();
+        if (hotspots.Count > 0)
+        {
+            var v = new PolicyViolation
+            {
+                Kind = ViolationKind.Hotspot,
+                Severity = Severity.Warning,
+                Title = $"PC 모바일 핫스팟 사용 의심 {hotspots.Count}대",
+                Principle = "업무망 PC 는 자기 회선을 다른 기기에 나눠 주지 않아야 함",
+                Detail =
+                    "PC 로 확인된 장비에서 공유기 신호가 함께 나왔다. 별도로 구입한 공유기를 꽂은 것이 아니라, "
+                  + "그 PC 가 윈도우 '모바일 핫스팟'(인터넷 연결 공유)을 켜 둔 상태로 보인다.\n"
+                  + "       이 상태에서는 업무망 회선이 PC 를 거쳐 무선으로 퍼져 나간다. "
+                  + "관리대장에 없는 개인 휴대폰·태블릿이 업무망에 붙게 되고, 그 접속은 로그에 "
+                  + "핫스팟을 켠 PC 한 대로만 남아 누가 접속했는지 구분되지 않는다.\n"
+                  + "       수업에 꼭 필요한 경우가 아니면 제한해야 한다. "
+                  + "수업용으로 켰다면 수업이 끝난 뒤 반드시 끈다.",
+                Action =
+                    "해당 PC 에서 '설정 → 네트워크 및 인터넷 → 모바일 핫스팟' 을 끈다.\n"
+                  + "       수업에 상시 필요하면 업무망이 아니라 학생 무선망을 쓰도록 안내하고, "
+                  + "부득이한 경우에만 사용 사유와 기간을 남긴다.",
+            };
+            v.Hosts.AddRange(hotspots);
             violations.Add(v);
         }
 
@@ -154,6 +185,7 @@ public static class PolicyAnalyzer
             {
                 ViolationKind.CrossLink => "혼선(망 간 연결)",
                 ViolationKind.NameConflict => "관리 이상(PC 이름 중복)",
+                ViolationKind.Hotspot => "PC 핫스팟(기능 사용)",
                 _ => "비인가 장비 연결",
             };
             sb.AppendLine($"{n}. {sev} {v.Title}  · 유형: {kind}");

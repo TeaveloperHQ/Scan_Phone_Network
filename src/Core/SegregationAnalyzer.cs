@@ -18,6 +18,9 @@ public sealed class ForeignNetwork
     public int Observations { get; set; }
     public List<string> Devices { get; } = new();
     public List<string> Evidence { get; } = new();
+
+    /// <summary>윈도우 모바일 핫스팟(ICS) 고정 대역 192.168.137.0/24 인가.</summary>
+    public bool IsWindowsIcs { get; set; }
 }
 
 /// <summary>망 분리 점검 결과 한 묶음.</summary>
@@ -32,6 +35,18 @@ public sealed class SegregationReport
     public List<string> Apipa { get; } = new();
     public List<string> Unaddressed { get; } = new();
     public List<string> RogueDhcp { get; } = new();
+
+    /// <summary>
+    /// 윈도우 모바일 핫스팟(ICS)으로 확정된 신호. 192.168.137.0/24 는 윈도우가 고정으로 쓰는
+    /// 대역이라 다른 해석의 여지가 거의 없다. 조치가 "장비를 뽑으세요"가 아니라
+    /// "그 PC 에서 기능을 끄세요"라 따로 모은다.
+    /// </summary>
+    /// <remarks>
+    /// 키 = 핫스팟 주소(사실상 192.168.137.1), 값 = 그 주소에서 관측된 신호들.
+    /// 한 대에서 DHCP·mDNS 가 같이 잡히므로 신호 수가 아니라 <b>주소 수</b>로 세야
+    /// "핫스팟 1대"를 "3건"으로 부풀리지 않는다.
+    /// </remarks>
+    public Dictionary<string, List<string>> IcsHotspots { get; } = new();
     public List<DiscoveredHost> Routers { get; } = new();
     public List<DiscoveredHost> Infrastructure { get; } = new();
 
@@ -40,6 +55,7 @@ public sealed class SegregationReport
 
     public bool AnyForeign => Foreign.Count > 0;
     public bool AnyRogueRouter => Routers.Count > 0 || Unaddressed.Count > 0 || RogueDhcp.Count > 0;
+    public bool AnyHotspot => IcsHotspots.Count > 0;
 }
 
 /// <summary>
@@ -68,6 +84,14 @@ public static class SegregationAnalyzer
             LocalSubnet = $"{NetworkInfo.NetworkBase(localIp, localMask)}/{prefix}",
             Gateway = gateway?.ToString(),
         };
+
+        // 같은 핫스팟에서 여러 신호가 잡히므로 주소 단위로 묶는다.
+        void AddIcs(string ip, string signal)
+        {
+            if (!report.IcsHotspots.TryGetValue(ip, out var signals))
+                report.IcsHotspots[ip] = signals = new List<string>();
+            if (!signals.Contains(signal)) signals.Add(signal);
+        }
 
         uint localNet = NetworkInfo.ToUInt(localIp) & NetworkInfo.ToUInt(localMask);
         uint maskv = NetworkInfo.ToUInt(localMask);
@@ -115,7 +139,19 @@ public static class SegregationAnalyzer
             if (o.Protocol == "DHCP-OFFER")
             {
                 string line = $"{o.SourceIp} · {o.Detail}";
-                if (!report.RogueDhcp.Contains(line)) report.RogueDhcp.Add(line);
+
+                // 192.168.137.1 이 DHCP 로 답했다 = 윈도우 PC 가 핫스팟을 켠 채
+                // 업무망 쪽으로 주소를 나눠 주고 있다. 무단 공유기보다 이쪽 설명이 정확하다.
+                bool ics = NetworkInfo.IsWindowsIcsRange(o.SourceIp)
+                           || (o.Detail?.Contains("192.168.137.") ?? false);
+                if (ics)
+                {
+                    AddIcs(o.SourceIp.ToString(), $"DHCP 응답 — {o.Detail}");
+                }
+                else if (!report.RogueDhcp.Contains(line))
+                {
+                    report.RogueDhcp.Add(line);
+                }
             }
 
             // APIPA — 별도 망이 아니라 "DHCP 를 못 받은 우리 쪽 기기"
@@ -133,6 +169,14 @@ public static class SegregationAnalyzer
             string dev = o.Detail is null ? o.SourceIp.ToString() : $"{o.SourceIp} · {o.Detail}";
             if (!fn.Devices.Contains(dev)) fn.Devices.Add(dev);
             if (!fn.Evidence.Contains(o.Protocol)) fn.Evidence.Add(o.Protocol);
+
+            if (NetworkInfo.IsWindowsIcsRange(o.SourceIp))
+            {
+                fn.IsWindowsIcs = true;
+                if (!fn.Evidence.Contains("ICS 고정 대역")) fn.Evidence.Add("ICS 고정 대역");
+                if (o.Protocol != "DHCP-OFFER")   // DHCP 는 위에서 이미 기록했다
+                    AddIcs(o.SourceIp.ToString(), $"{o.Protocol}{(o.Detail is null ? "" : " — " + o.Detail)}");
+            }
         }
 
         // 2) ARP 관측(있으면) — MAC 까지 나오므로 판정이 훨씬 강해진다
@@ -148,6 +192,15 @@ public static class SegregationAnalyzer
             string dev = $"{a.Ip} · {a.Mac} · {vendor}";
             if (!fn.Devices.Contains(dev)) fn.Devices.Add(dev);
             if (!fn.Evidence.Contains("ARP")) fn.Evidence.Add("ARP");
+
+            // ARP 로 잡히면 MAC 까지 나온다. 핫스팟을 켠 PC 를 MAC 으로 특정할 수 있는
+            // 유일한 경로다(UDP 청취로는 보내는 쪽 MAC 을 알 수 없다).
+            if (NetworkInfo.IsWindowsIcsRange(ip))
+            {
+                fn.IsWindowsIcs = true;
+                if (!fn.Evidence.Contains("ICS 고정 대역")) fn.Evidence.Add("ICS 고정 대역");
+                AddIcs(a.Ip, $"ARP — MAC {a.Mac} ({vendor})");
+            }
 
             // 전화망 라우터/공유기 벤더가 그 대역에 있으면 망 종류를 특정할 수 있다
             var cat = OuiDatabase.Lookup(a.Mac)?.Category;
@@ -236,8 +289,37 @@ public static class SegregationAnalyzer
     {
         var list = new List<PolicyViolation>();
 
+        if (r.IcsHotspots.Count > 0)
+        {
+            list.Add(new PolicyViolation
+            {
+                Kind = ViolationKind.Hotspot,
+                Severity = Severity.Warning,
+                Title = $"PC 모바일 핫스팟 사용 확인 {r.IcsHotspots.Count}대 (192.168.137.0/24)",
+                Principle = "업무망 PC 는 자기 회선을 다른 기기에 나눠 주지 않아야 함",
+                Detail =
+                    "192.168.137.x 가 업무망 구간에서 관측됐다. 이 대역은 윈도우가 '모바일 핫스팟'\n"
+                  + "       (인터넷 연결 공유)을 켤 때 항상 쓰는 고정 대역이고 사용자가 바꿀 수 없다.\n"
+                  + "       따라서 교내 PC 한 대가 자기 회선을 무선으로 나눠 주고 있다고 봐도 된다.\n"
+                  + string.Join("\n", r.IcsHotspots.Select(
+                        kv => $"       · {kv.Key}  ({string.Join(" / ", kv.Value)})")) + "\n"
+                  + "       업무망 회선이 그 PC 를 거쳐 밖으로 퍼진다. 관리대장에 없는 개인 휴대폰·태블릿이\n"
+                  + "       붙어도 접속 기록에는 그 PC 한 대로만 남아 누가 접속했는지 구분되지 않는다.\n"
+                  + "       DHCP 응답까지 나왔다면 공유 방향을 잘못 잡아 업무망 쪽으로 주소를 뿌리는\n"
+                  + "       상태이므로 더 급하다. 다른 PC 가 엉뚱한 주소를 받아 통신이 끊길 수 있다.",
+                Action =
+                    "수업에 꼭 필요한 경우가 아니면 제한한다. 수업용으로 켰다면 끝난 뒤 반드시 끈다.\n"
+                  + "       끄는 곳: 설정 → 네트워크 및 인터넷 → 모바일 핫스팟\n"
+                  + "       상시 필요하면 업무망이 아니라 학생 무선망을 쓰도록 안내한다.\n"
+                  + "       어느 PC 인지 못 좁히면 스위치 MAC 주소 테이블에서 해당 포트를 찾는다.",
+            });
+        }
+
         foreach (var f in r.Foreign)
         {
+            // ICS 대역은 위에서 핫스팟으로 이미 설명했다. 같은 사실을 두 번 신고하지 않는다.
+            if (f.IsWindowsIcs) continue;
+
             var v = new PolicyViolation
             {
                 Kind = ViolationKind.CrossLink,
@@ -326,7 +408,7 @@ public static class SegregationAnalyzer
 
         // ── 핵심 질문 1: 무단 공유기 ──
         sb.AppendLine("【 1. 무단 공유기가 있는가 】");
-        if (!r.AnyRogueRouter)
+        if (!r.AnyRogueRouter && !r.AnyHotspot)
         {
             sb.AppendLine("  ✅ 발견되지 않음");
         }
@@ -342,20 +424,51 @@ public static class SegregationAnalyzer
         }
         sb.AppendLine();
 
+        // ── PC 핫스팟은 따로 ── 산 장비가 아니라 켜 둔 기능이라 조치가 다르다
+        if (r.AnyHotspot)
+        {
+            sb.AppendLine($"【 1-1. PC 모바일 핫스팟 {r.IcsHotspots.Count}대 (192.168.137.0/24) 】");
+            sb.AppendLine("  📶 켜져 있음");
+            foreach (var (ip, signals) in r.IcsHotspots)
+            {
+                sb.AppendLine($"     · {ip}");
+                foreach (var s in signals)
+                    sb.AppendLine($"         - {s}");
+            }
+            sb.AppendLine();
+            sb.AppendLine("     192.168.137.x 는 윈도우가 '모바일 핫스팟'(인터넷 연결 공유)을 켤 때");
+            sb.AppendLine("     항상 쓰는 고정 대역입니다. 사용자가 바꿀 수 있는 값이 아니라서,");
+            sb.AppendLine("     이 주소가 보이면 교내 PC 한 대가 자기 회선을 무선으로 나눠 주고 있는 것입니다.");
+            sb.AppendLine();
+            sb.AppendLine("     ⚠ 업무망 회선이 그 PC 를 거쳐 밖으로 퍼집니다. 관리대장에 없는 개인");
+            sb.AppendLine("       휴대폰·태블릿이 붙어도, 접속 기록에는 그 PC 한 대로만 남아 구분되지 않습니다.");
+            sb.AppendLine();
+            sb.AppendLine("     ▸ 수업에 꼭 필요한 경우가 아니면 제한해야 합니다.");
+            sb.AppendLine("       수업용으로 켰다면 수업이 끝난 뒤 반드시 끕니다.");
+            sb.AppendLine("       끄는 곳: 설정 → 네트워크 및 인터넷 → 모바일 핫스팟");
+            sb.AppendLine();
+        }
+
         // ── 핵심 질문 2·3: 망 분리 ──
         sb.AppendLine("【 2. 전화망·학생망·무선망과 분리되어 있는가 】");
-        if (!r.AnyForeign)
+
+        // ICS 대역은 학교의 다른 망이 아니라 PC 가 켜 둔 기능이다.
+        // 1-1 에서 이미 설명했으므로 여기서 또 세면 같은 사실을 두 번 신고하는 셈이 된다.
+        var otherNets = r.Foreign.Where(f => !f.IsWindowsIcs).ToList();
+        if (otherNets.Count == 0)
         {
             sb.AppendLine("  ✅ 분리됨 — 우리 대역 밖의 주소가 관측되지 않음");
+            if (r.AnyHotspot)
+                sb.AppendLine("     (192.168.137.x 는 위 1-1 의 PC 핫스팟이라 여기서 세지 않습니다)");
         }
         else
         {
-            sb.AppendLine($"  ⛔ 분리 안 됨 — 남의 대역 {r.Foreign.Count}개가 같은 구간에서 관측됨");
+            sb.AppendLine($"  ⛔ 분리 안 됨 — 남의 대역 {otherNets.Count}개가 같은 구간에서 관측됨");
             sb.AppendLine();
             sb.AppendLine("     분리돼 있다면 이 자리에서는 우리 대역 주소만 들려야 합니다.");
             sb.AppendLine("     아래 대역이 들린다는 것은 같은 스위치 구간에 함께 물려 있다는 뜻입니다.");
             sb.AppendLine();
-            foreach (var f in r.Foreign)
+            foreach (var f in otherNets)
             {
                 sb.AppendLine($"     ▸ {f.Subnet}   추정: {Ko(f.Guess)}   관측 {f.Observations}회 ({string.Join(", ", f.Evidence)})");
                 foreach (var d in f.Devices.Take(6))

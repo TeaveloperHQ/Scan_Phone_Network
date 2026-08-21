@@ -86,6 +86,24 @@ public static class NetworkInfo
     public static string NetworkBase(IPAddress ip, IPAddress mask) =>
         FromUInt(ToUInt(ip) & ToUInt(mask)).ToString();
 
+    /// <summary>
+    /// 윈도우 '모바일 핫스팟'(인터넷 연결 공유, ICS)이 쓰는 고정 대역인가.
+    ///
+    /// 윈도우는 ICS 를 켜면 공유하는 쪽 인터페이스에 <b>항상 192.168.137.1</b> 을 붙이고
+    /// 192.168.137.0/24 로 DHCP 를 뿌린다. 사용자가 바꿀 수 있는 값이 아니라서,
+    /// 이 대역이 보이면 "윈도우 PC 가 핫스팟을 켰다"로 사실상 확정할 수 있다.
+    ///
+    /// 업무망에서 이게 보이는 경우는 둘 중 하나다.
+    ///   - PC 가 무선으로 공유 중이고 그 흔적이 유선까지 새어 나온 경우
+    ///   - 공유 방향을 잘못 잡아 <b>업무망 쪽으로 DHCP 를 뿌리고 있는</b> 경우(이쪽이 훨씬 위험)
+    /// </summary>
+    public static bool IsWindowsIcsRange(IPAddress ip)
+    {
+        if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+        var b = ip.GetAddressBytes();
+        return b[0] == 192 && b[1] == 168 && b[2] == 137;
+    }
+
     /// <summary>IPv4 를 정렬·비교용 32비트 값으로. (10.0.0.9 &lt; 10.0.1.1 이 성립)</summary>
     public static uint ToUInt(IPAddress ip)
     {

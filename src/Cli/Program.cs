@@ -18,6 +18,13 @@ if (ouiPath is not null)
     Console.WriteLine($"OUI 외부 DB 로드: {n}건\n");
 }
 
+// --selftest : 망을 건드리지 않고 판정·보고 로직만 확인한다.
+// 실제 무단 장비가 없는 곳에서도 "이런 게 잡히면 이렇게 보고된다"를 검증할 수 있다.
+if (args.Contains("--selftest"))
+{
+    return SelfTest.Run();
+}
+
 var progress = new Progress<ScanProgress>(p =>
     Console.WriteLine($"  [{p.Phase}] {p.Done}/{p.Total}"));
 
