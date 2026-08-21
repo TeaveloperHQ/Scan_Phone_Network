@@ -85,7 +85,13 @@ public partial class MainWindow : Window
         Progress.Value = 100;
 
         var violations = PolicyAnalyzer.Analyze(report);
-        _reportText = PolicyAnalyzer.FormatReport(report, violations);
+
+        // 브리핑을 맨 위에 둔다. 교사가 제일 먼저 봐야 할 것은 장비 목록이 아니라
+        // "무단 공유기가 있는가 / 다른 망과 분리돼 있는가" 두 줄이다.
+        _reportText = report.Segregation is not null
+            ? SegregationAnalyzer.FormatBriefing(report.Segregation) + "\n"
+              + PolicyAnalyzer.FormatReport(report, violations)
+            : PolicyAnalyzer.FormatReport(report, violations);
 
         if (violations.Count > 0)
         {
@@ -100,7 +106,8 @@ public partial class MainWindow : Window
         }
         else SummaryText.Text = "✅ 이상 없음";
 
-        ReportButton.IsEnabled = violations.Count > 0;
+        // 이상이 없어도 브리핑은 읽을 수 있어야 한다("분리돼 있다"는 것도 결과다).
+        ReportButton.IsEnabled = violations.Count > 0 || report.Segregation is not null;
         CsvButton.IsEnabled = report.Hosts.Count > 0;
         LedgerButton.IsEnabled = report.Hosts.Count > 0;
     }

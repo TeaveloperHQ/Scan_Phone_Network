@@ -115,6 +115,11 @@ public static class PolicyAnalyzer
             violations.Add(v);
         }
 
+        // 5) 망 분리 판정 결과 합류 — 스캔만으로는 안 보이는 이상이 여기서 들어온다.
+        //    (타 대역 혼선, IP 없는 장비, 무단 DHCP, 두 망을 물고 있는 장비)
+        if (report.Segregation is not null)
+            violations.AddRange(SegregationAnalyzer.ToViolations(report.Segregation));
+
         return violations
             .OrderByDescending(v => v.Severity)
             .ToList();

@@ -9,8 +9,14 @@ namespace ScanPhoneNetwork;
 public static class HostDiscovery
 {
     /// <summary>대상 IP 목록을 병렬 핑. 응답한 호스트만 DiscoveredHost 로 반환.</summary>
+    /// <remarks>
+    /// 병렬도 128 · 타임아웃 500ms 는 학교 유선망(같은 L2, 왕복 1ms 안팎) 기준이다.
+    /// /23 이면 죽은 주소가 450개쯤이라 이 구간이 전체 시간을 좌우한다.
+    /// 살아 있는 호스트는 1ms 안에 답하므로 500ms 면 충분하고, 병렬도를 올리는 편이
+    /// 타임아웃을 더 줄이는 것보다 안전하다(응답 느린 프린터를 놓치지 않는다).
+    /// </remarks>
     public static async Task<List<DiscoveredHost>> PingSweepAsync(
-        IEnumerable<IPAddress> targets, int timeoutMs = 600, int maxParallel = 64)
+        IEnumerable<IPAddress> targets, int timeoutMs = 500, int maxParallel = 128)
     {
         var found = new System.Collections.Concurrent.ConcurrentBag<DiscoveredHost>();
         using var gate = new SemaphoreSlim(maxParallel);
@@ -44,8 +50,10 @@ public static class HostDiscovery
     [SupportedOSPlatform("windows")]
     public static void ResolveMacs(IEnumerable<DiscoveredHost> hosts)
     {
-        foreach (var h in hosts)
-            h.Mac = SendArp(h.Ip);
+        // SendARP 는 동기 호출이고, ARP 캐시에 없는 주소는 응답을 기다리며 블로킹된다.
+        // 한 대씩 돌면 그 대기가 그대로 누적되므로 나눠서 동시에 부른다.
+        Parallel.ForEach(hosts, new ParallelOptions { MaxDegreeOfParallelism = 16 },
+            h => h.Mac = SendArp(h.Ip));
     }
 
     [SupportedOSPlatform("windows")]

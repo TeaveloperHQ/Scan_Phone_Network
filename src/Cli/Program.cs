@@ -8,7 +8,7 @@ string? ouiPath = GetOpt("--oui");
 
 // 옵션 값으로 소비된 인덱스를 제외하고 남는 위치 인자 = 대상 대역(CIDR)
 var consumed = new HashSet<int>();
-MarkOpt("--csv"); MarkOpt("--oui"); MarkOpt("--ledger"); MarkOpt("--prefix");
+MarkOpt("--csv"); MarkOpt("--oui"); MarkOpt("--ledger"); MarkOpt("--prefix"); MarkOpt("--listen");
 string? cidr = args.Where((a, i) => !a.StartsWith("--") && !consumed.Contains(i)).FirstOrDefault();
 int autoPrefix = int.TryParse(GetOpt("--prefix"), out int pfx) ? pfx : Scanner.DefaultAutoPrefix;
 
@@ -23,7 +23,22 @@ var progress = new Progress<ScanProgress>(p =>
 
 try
 {
-    var report = await new Scanner().RunAsync(cidr, progress, default, SchoolNetwork.Unknown, autoPrefix);
+    int listenSec = int.TryParse(GetOpt("--listen"), out int ls) ? ls : Scanner.DefaultListenSeconds;
+    var report = await new Scanner().RunAsync(
+        cidr, progress, default, SchoolNetwork.Unknown, autoPrefix, listenSec);
+
+    // 망 분리 브리핑 — 가장 먼저 보여준다. 이게 이 앱의 결론이다.
+    if (report.Segregation is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine(SegregationAnalyzer.FormatBriefing(report.Segregation));
+    }
+
+    if (report.Timings.Count > 0)
+    {
+        Console.WriteLine($"[소요] 전체 {report.TotalElapsed.TotalSeconds:F1}초  ·  "
+            + string.Join("  ", report.Timings.Select(t => $"{t.Key} {t.Value.TotalSeconds:F1}s")));
+    }
 
     Console.WriteLine($"\n대상: {report.TargetRange}");
     Console.WriteLine($"발견 호스트: {report.Hosts.Count}대 / 의심 장비: {report.Suspicious.Count()}대\n");

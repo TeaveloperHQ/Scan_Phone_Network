@@ -3,6 +3,7 @@
     <OutputType>WinExe</OutputType>
     <!-- Avalonia = 크로스플랫폼. 리눅스에서 개발/실행, Windows exe로 배포 -->
     <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>

@@ -19,35 +19,47 @@ public static class PortProbe
 
     public static async Task<Result> ProbeAsync(IPAddress ip, int connectTimeoutMs = 500)
     {
-        var open = new List<int>();
         var banners = new List<string>();
 
-        foreach (int port in InterestingPorts)
-        {
-            if (await IsOpenAsync(ip, port, connectTimeoutMs))
-                open.Add(port);
-        }
+        // 포트를 하나씩 순서대로 열어보면 응답 없는 호스트에서 최악
+        // (포트 수 × 타임아웃) 만큼 걸린다. 9개 × 500ms = 4.5초/대.
+        // 서로 독립된 검사이므로 동시에 던진다 → 호스트당 타임아웃 1회로 수렴.
+        var portTasks = InterestingPorts
+            .Select(async p => (Port: p, Open: await IsOpenAsync(ip, p, connectTimeoutMs)))
+            .ToArray();
+
+        // SIP 는 UDP OPTIONS 로 별도 확인(TCP 스캔에 안 잡혀도 응답할 수 있음).
+        // UDP 라 TCP 검사와 겹쳐 돌아도 서로 방해하지 않으므로 같이 시작한다.
+        var sipTask = SipOptionsAsync(ip);
+
+        var open = (await Task.WhenAll(portTasks))
+            .Where(r => r.Open)
+            .Select(r => r.Port)
+            .OrderBy(p => p)
+            .ToList();
 
         if (open.Contains(80)) AddIfNotEmpty(banners, await HttpBannerAsync(ip, 80, false));
         else if (open.Contains(8080)) AddIfNotEmpty(banners, await HttpBannerAsync(ip, 8080, false));
         if (open.Contains(443)) AddIfNotEmpty(banners, await HttpBannerAsync(ip, 443, true));
 
-        // SIP 는 UDP OPTIONS 로 별도 확인(포트 스캔에 안 잡혀도 응답할 수 있음)
-        AddIfNotEmpty(banners, await SipOptionsAsync(ip));
+        AddIfNotEmpty(banners, await sipTask);
 
         return new Result(open, banners);
     }
 
     private static async Task<bool> IsOpenAsync(IPAddress ip, int port, int timeoutMs)
     {
+        // 예전 방식(Task.WhenAny + Task.Delay)은 타임아웃이 나도 연결 시도가 계속 살아 있고,
+        // 검사 1건마다 타이머가 하나씩 쌓였다(대역 하나 훑으면 수천 개).
+        // 취소 토큰을 쓰면 소켓 작업 자체가 취소되고 타이머도 같이 정리된다.
+        using var client = new TcpClient();
+        using var cts = new CancellationTokenSource(timeoutMs);
         try
         {
-            using var client = new TcpClient();
-            var connect = client.ConnectAsync(ip, port);
-            var done = await Task.WhenAny(connect, Task.Delay(timeoutMs));
-            return done == connect && client.Connected;
+            await client.ConnectAsync(ip, port, cts.Token);
+            return client.Connected;
         }
-        catch { return false; }
+        catch { return false; }   // 타임아웃·연결거부·도달불가 모두 "닫힘"
     }
 
     private static async Task<string?> HttpBannerAsync(IPAddress ip, int port, bool tls)

@@ -19,6 +19,18 @@ public sealed class ScanReport
 
     public List<DiscoveredHost> Hosts { get; init; } = new();
 
+    /// <summary>수동 청취(듣기만)로 잡은 신호. 핑 스윕이 못 찾는 장비가 여기 들어온다.</summary>
+    public List<PassiveObservation> Observations { get; init; } = new();
+
+    /// <summary>망 분리 판정 결과. 청취를 건너뛰면 null.</summary>
+    public SegregationReport? Segregation { get; set; }
+
+    /// <summary>단계별 소요 시간. 느려졌을 때 어디가 범인인지 바로 보라고 남긴다.</summary>
+    public Dictionary<string, TimeSpan> Timings { get; } = new();
+
+    /// <summary>스캔 전체 소요 시간.</summary>
+    public TimeSpan TotalElapsed { get; set; }
+
     /// <summary>업무망에 있으면 안 되는(=의심) 장비만 추림.</summary>
     public IEnumerable<DiscoveredHost> Suspicious =>
         Hosts.Where(h => h.Category is DeviceCategory.Router
@@ -33,6 +45,12 @@ public sealed class Scanner
     /// <summary>자동 탐지 시 기본 스캔 프리픽스. 학교가 /23(255.255.254.0)로 구성하므로 23 기본.</summary>
     public const int DefaultAutoPrefix = 23;
 
+    /// <summary>
+    /// 망 분리 판정을 위한 수동 청취 기본 시간(초). 0 이면 청취를 건너뛴다.
+    /// 실측상 30초면 mDNS·DHCP 가 충분히 잡힌다(타 대역 PC 1대, IP 없는 공유기 1대 확인).
+    /// </summary>
+    public const int DefaultListenSeconds = 30;
+
     /// <param name="autoPrefix">
     /// 자동 탐지 시 스캔 범위 프리픽스(기본 23=/23). 특별한 경우 22=/22 까지.
     /// PC 실제 마스크가 더 넓으면(작은 숫자) 그쪽을 따른다(과소 스캔 방지).
@@ -43,7 +61,8 @@ public sealed class Scanner
         IProgress<ScanProgress>? progress = null,
         CancellationToken ct = default,
         SchoolNetwork schoolNetwork = SchoolNetwork.Unknown,
-        int autoPrefix = DefaultAutoPrefix)
+        int autoPrefix = DefaultAutoPrefix,
+        int listenSeconds = DefaultListenSeconds)
     {
         IPAddress network, mask;
         string label;
@@ -76,18 +95,40 @@ public sealed class Scanner
             throw new InvalidOperationException(
                 $"대상이 {targets.Count}개로 너무 큽니다(>{MaxHosts}). /24~/22 단위로 좁혀 지정하세요.");
 
-        // 1) DHCP/SSDP 는 브로드캐스트라 호스트 목록과 별개로 1회씩
-        progress?.Report(new ScanProgress("DHCP 서버 탐지", 0, 1));
-        var dhcpServers = await DhcpProbe.FindDhcpServersAsync();
-        ct.ThrowIfCancellationRequested();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var lap = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string phase)
+        {
+            report.Timings[phase] = lap.Elapsed;
+            lap.Restart();
+        }
 
-        progress?.Report(new ScanProgress("SSDP(공유기) 탐지", 0, 1));
-        var ssdp = await SsdpProbe.DiscoverAsync();
-        ct.ThrowIfCancellationRequested();
+        // 0) 수동 청취를 여기서 미리 띄운다.
+        //    듣기는 CPU·대역폭을 거의 안 쓰고 그냥 기다리는 일이라, 스캔이 끝나기를
+        //    기다렸다 시작하면 그 시간이 벽시계에 그대로 더해진다. 겹쳐 돌리면 공짜다.
+        var localSub = NetworkInfo.GetActiveSubnet();
+        Task<List<PassiveObservation>>? listenTask = null;
+        Task<UpstreamInfo?>? upstreamTask = null;
+        if (listenSeconds > 0 && localSub is not null)
+        {
+            listenTask = PassiveListener.ListenAsync(TimeSpan.FromSeconds(listenSeconds), null, ct);
+            upstreamTask = UpstreamProbe.QueryAsync(TimeSpan.FromSeconds(8), ct);
+        }
 
-        // 2) 핑 스윕
-        progress?.Report(new ScanProgress("핑 스윕", 0, targets.Count));
-        var hosts = await HostDiscovery.PingSweepAsync(targets);
+        // 1~2) DHCP·SSDP·핑 스윕을 함께 시작한다.
+        //      앞의 둘은 브로드캐스트를 한 번 뿌리고 응답을 기다리는 일이라 대부분 순수 대기다
+        //      (실측 3.1초 + 2.5초). 순서대로 하면 그 대기가 그대로 더해지지만,
+        //      셋은 서로 독립이라 동시에 돌리면 가장 오래 걸리는 하나로 수렴한다.
+        progress?.Report(new ScanProgress("DHCP·SSDP·핑 스윕", 0, targets.Count));
+        var dhcpTask = DhcpProbe.FindDhcpServersAsync();
+        var ssdpTask = SsdpProbe.DiscoverAsync();
+        var pingTask = HostDiscovery.PingSweepAsync(targets);
+
+        var hosts = await pingTask;
+        var dhcpServers = await dhcpTask;
+        var ssdp = await ssdpTask;
+        ct.ThrowIfCancellationRequested();
+        Mark("DHCP·SSDP·핑 스윕(동시)");
 
         // SSDP/DHCP 로만 보인 호스트도 합류(핑에 응답 안 해도 잡기)
         MergeExtraHosts(hosts, ssdp.Keys);
@@ -96,6 +137,7 @@ public sealed class Scanner
         // 3) MAC 해석 (Windows)
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             HostDiscovery.ResolveMacs(hosts);
+        Mark("MAC 해석");
 
         // 4) 호스트별 포트/배너 프로브 — 병렬(대역 넓어도 빠르게)
         int done = 0;
@@ -127,9 +169,13 @@ public sealed class Scanner
             }));
         }
 
+        Mark("포트/배너 프로브");
+
         // 5) PC 이름 해석 (NetBIOS/DNS) — 병렬
         progress?.Report(new ScanProgress("PC 이름 조회", 0, hosts.Count));
-        using (var gate = new SemaphoreSlim(32))
+        // NetBIOS 질의는 응답 없는 호스트에서 700ms 를 그냥 기다린다.
+        // 동시 처리 수를 올리는 만큼 그 대기가 겹쳐 사라진다.
+        using (var gate = new SemaphoreSlim(64))
         {
             int hdone = 0;
             await Task.WhenAll(hosts.Select(async h =>
@@ -144,6 +190,8 @@ public sealed class Scanner
             }));
         }
 
+        Mark("PC 이름 조회");
+
         // 6) 분류
         foreach (var h in hosts)
             Classifier.Classify(h, dhcpServers);
@@ -154,6 +202,38 @@ public sealed class Scanner
         report.Hosts.AddRange(hosts
             .OrderByDescending(h => h.Confidence)
             .ThenBy(h => NetworkInfo.ToUInt(h.Ip)));
+
+        Mark("분류");
+
+        // 7) 망 분리 판정 — 스캔만으로는 알 수 없다.
+        //    스캔은 "우리 대역에 누가 있나"를 볼 뿐이고, 분리 여부는
+        //    "남의 대역이 같은 구간에서 들리는가"로 판정해야 한다.
+        //    청취는 0단계에서 이미 시작해 뒀으므로, 여기서는 남은 시간만 기다린다.
+        if (listenTask is not null && localSub is not null)
+        {
+            if (!listenTask.IsCompleted)
+            {
+                int remain = Math.Max(0, listenSeconds - (int)clock.Elapsed.TotalSeconds);
+                progress?.Report(new ScanProgress("수동 청취 마무리", listenSeconds - remain, listenSeconds));
+            }
+
+            var observations = await listenTask;
+            report.Observations.AddRange(observations);
+
+            UpstreamInfo? upstream = null;
+            if (upstreamTask is not null)
+            {
+                try { upstream = await upstreamTask; } catch { /* 폐쇄망이면 없어도 된다 */ }
+            }
+
+            report.Segregation = SegregationAnalyzer.Analyze(
+                localSub.LocalIp, localSub.Mask, localSub.Gateway,
+                report.Hosts, observations, arpSightings: null, upstream: upstream);
+
+            Mark("수동 청취(스캔과 병행)");
+        }
+
+        report.TotalElapsed = clock.Elapsed;
         report.FinishedAt = DateTime.Now;
         return report;
     }
