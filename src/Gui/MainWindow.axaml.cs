@@ -20,8 +20,29 @@ public partial class MainWindow : Window
     private WindowNotificationManager? _notify;
     private TrayIcon? _tray;
 
-    private static string AllowListPath =>
-        Path.Combine(AppContext.BaseDirectory, "allowlist.json");
+    /// <summary>
+    /// 승인 목록 저장 위치.
+    ///
+    /// exe 옆에 두면 안 된다. 배포된 앱은 Program Files 처럼 쓰기 권한이 없는 곳에
+    /// 놓일 수 있고, 단일 파일로 묶인 exe 는 실행할 때마다 임시 폴더에 풀리므로
+    /// 그 옆에 쓴 파일은 다음 실행 때 사라질 수 있다. 사용자 데이터 폴더를 쓴다.
+    ///
+    /// 예전 버전이 exe 옆에 만들어 둔 파일이 있으면 그것을 그대로 이어 쓴다.
+    /// </summary>
+    private static string AllowListPath
+    {
+        get
+        {
+            string legacy = Path.Combine(AppContext.BaseDirectory, "allowlist.json");
+            if (File.Exists(legacy)) return legacy;
+
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ScanPhoneNetwork");
+            try { Directory.CreateDirectory(dir); } catch { return legacy; }
+            return Path.Combine(dir, "allowlist.json");
+        }
+    }
 
     // 디자이너용 기본 생성자
     public MainWindow() : this(false) { }
@@ -31,10 +52,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         Grid.ItemsSource = _rows;
 
-        // exe 옆 oui.csv 있으면 제조사 식별률 향상
-        var ouiPath = Path.Combine(AppContext.BaseDirectory, "oui.csv");
-        if (File.Exists(ouiPath)) OuiDatabase.LoadExternalCsv(ouiPath);
-
+        // OUI 목록은 Scanner 가 알아서 챙긴다(exe 옆 → 캐시 → IEEE 다운로드 순).
         _monitor = new MonitorService(AllowListPath);
         _monitor.ScanCompleted += r => Dispatcher.UIThread.Post(() => ShowReport(r));
         _monitor.NewSuspicious += h => Dispatcher.UIThread.Post(() => AlertNewDevice(h));

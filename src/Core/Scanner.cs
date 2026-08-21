@@ -176,7 +176,7 @@ public sealed class Scanner
                     }
                     // 프린터 포트가 열렸으면 SNMP 로 모델명 수집
                     if (h.OpenPorts.Contains(9100) || h.OpenPorts.Contains(515) || h.OpenPorts.Contains(631))
-                        h.Model = await SnmpProbe.GetSysDescrAsync(h.Ip);
+                        h.Model = await SnmpProbe.GetSysDescrAsync(h.Ip, snmpCommunity, ct: ct);
                 }
                 finally
                 {
