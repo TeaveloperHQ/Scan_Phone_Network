@@ -8,15 +8,12 @@ string? ouiPath = GetOpt("--oui");
 
 // 옵션 값으로 소비된 인덱스를 제외하고 남는 위치 인자 = 대상 대역(CIDR)
 var consumed = new HashSet<int>();
-MarkOpt("--csv"); MarkOpt("--oui"); MarkOpt("--ledger"); MarkOpt("--prefix"); MarkOpt("--listen");
+MarkOpt("--csv"); MarkOpt("--oui"); MarkOpt("--ledger"); MarkOpt("--prefix"); MarkOpt("--listen"); MarkOpt("--snmp");
 string? cidr = args.Where((a, i) => !a.StartsWith("--") && !consumed.Contains(i)).FirstOrDefault();
 int autoPrefix = int.TryParse(GetOpt("--prefix"), out int pfx) ? pfx : Scanner.DefaultAutoPrefix;
 
-if (ouiPath is not null)
-{
-    int n = OuiDatabase.LoadExternalCsv(ouiPath);
-    Console.WriteLine($"OUI 외부 DB 로드: {n}건\n");
-}
+// OUI 목록은 Scanner 가 알아서 챙긴다(없으면 IEEE 에서 받아 캐시).
+// --oui 로 파일을 직접 줄 수도 있다.
 
 // --selftest : 망을 건드리지 않고 판정·보고 로직만 확인한다.
 // 실제 무단 장비가 없는 곳에서도 "이런 게 잡히면 이렇게 보고된다"를 검증할 수 있다.
@@ -32,7 +29,8 @@ try
 {
     int listenSec = int.TryParse(GetOpt("--listen"), out int ls) ? ls : Scanner.DefaultListenSeconds;
     var report = await new Scanner().RunAsync(
-        cidr, progress, default, SchoolNetwork.Unknown, autoPrefix, listenSec);
+        cidr, progress, default, SchoolNetwork.Unknown, autoPrefix, listenSec,
+        GetOpt("--snmp"), ouiPath);
 
     // 망 분리 브리핑 — 가장 먼저 보여준다. 이게 이 앱의 결론이다.
     if (report.Segregation is not null)
@@ -40,6 +38,10 @@ try
         Console.WriteLine();
         Console.WriteLine(SegregationAnalyzer.FormatBriefing(report.Segregation));
     }
+
+    Console.WriteLine(report.OuiEntriesLoaded > 0
+        ? $"[제조사 DB] IEEE 목록 {report.OuiEntriesLoaded:N0}건 사용"
+        : "[제조사 DB] 내장 목록만 사용 — 모르는 제조사는 '제조사 미상'으로 나옵니다");
 
     if (report.Timings.Count > 0)
     {

@@ -171,6 +171,65 @@ public static class OuiDatabase
         return map.Count;
     }
 
+    /// <summary>
+    /// IEEE OUI 목록을 확보해 로드한다. 없으면 받아 오고, 있으면 그대로 쓴다.
+    ///
+    /// <para>
+    /// 내장 목록은 학교망에서 자주 보이는 벤더 위주라 그 밖의 장비는 "제조사 미상"이 된다.
+    /// 실측에서 남의 대역 장비 대부분이 미상으로 나와 보고서의 쓸모가 크게 떨어졌다.
+    /// 교사가 파일을 직접 내려받아 exe 옆에 두게 하는 건 현실적이지 않으므로 앱이 챙긴다.
+    /// </para>
+    ///
+    /// <para>
+    /// 주의: IEEE 서버는 스크립트로 보이는 User-Agent 를 <b>418</b> 로 막는다.
+    /// 브라우저 UA 를 보내야 받아진다. 폐쇄망이면 실패해도 그냥 내장 목록으로 간다.
+    /// </para>
+    /// </summary>
+    /// <returns>로드된 항목 수. 0 이면 내장 목록만 쓰는 상태.</returns>
+    public static async Task<int> EnsureLoadedAsync(
+        string? explicitPath = null, CancellationToken ct = default)
+    {
+        // 1) 사용자가 지정한 경로
+        if (!string.IsNullOrWhiteSpace(explicitPath) && File.Exists(explicitPath))
+            return LoadExternalCsv(explicitPath);
+
+        // 2) exe 옆
+        string beside = Path.Combine(AppContext.BaseDirectory, "oui.csv");
+        if (File.Exists(beside)) return LoadExternalCsv(beside);
+
+        // 3) 앱 데이터 폴더에 받아 둔 것 (1년이 지나면 다시 받는다)
+        string cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ScanPhoneNetwork");
+        string cached = Path.Combine(cacheDir, "oui.csv");
+        if (File.Exists(cached)
+            && (DateTime.Now - File.GetLastWriteTime(cached)).TotalDays < 365)
+            return LoadExternalCsv(cached);
+
+        // 4) 내려받기
+        try
+        {
+            Directory.CreateDirectory(cacheDir);
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(90) };
+            http.DefaultRequestHeaders.Add("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/126.0 Safari/537.36");
+            var bytes = await http.GetByteArrayAsync(
+                "https://standards-oui.ieee.org/oui/oui.csv", ct);
+
+            // 받다 만 파일을 캐시로 남기지 않는다(3MB 를 훨씬 밑돌면 실패로 본다)
+            if (bytes.Length < 1_000_000) return File.Exists(cached) ? LoadExternalCsv(cached) : 0;
+
+            await File.WriteAllBytesAsync(cached, bytes, ct);
+            return LoadExternalCsv(cached);
+        }
+        catch
+        {
+            // 폐쇄망·차단 — 예전에 받아 둔 게 있으면 낡았어도 없는 것보단 낫다
+            return File.Exists(cached) ? LoadExternalCsv(cached) : 0;
+        }
+    }
+
     // 회사명에 키워드가 있으면 종류를 추정(내장 목록에 없을 때 보조).
     // 주의: IEEE 회사명은 대소문자 표기가 뒤죽박죽이라 반드시 소문자로 비교한다.
     private static DeviceCategory GuessCategory(string vendor)

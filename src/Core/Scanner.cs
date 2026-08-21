@@ -22,11 +22,17 @@ public sealed class ScanReport
     /// <summary>수동 청취(듣기만)로 잡은 신호. 핑 스윕이 못 찾는 장비가 여기 들어온다.</summary>
     public List<PassiveObservation> Observations { get; init; } = new();
 
+    /// <summary>ARP 로 관측한 (IP, MAC). 관리자 권한으로 실행했을 때만 채워진다.</summary>
+    public List<ArpSighting> ArpSightings { get; init; } = new();
+
     /// <summary>망 분리 판정 결과. 청취를 건너뛰면 null.</summary>
     public SegregationReport? Segregation { get; set; }
 
     /// <summary>단계별 소요 시간. 느려졌을 때 어디가 범인인지 바로 보라고 남긴다.</summary>
     public Dictionary<string, TimeSpan> Timings { get; } = new();
+
+    /// <summary>로드된 IEEE OUI 항목 수. 0 이면 내장 목록만 쓴 것이다.</summary>
+    public int OuiEntriesLoaded { get; set; }
 
     /// <summary>스캔 전체 소요 시간.</summary>
     public TimeSpan TotalElapsed { get; set; }
@@ -62,7 +68,9 @@ public sealed class Scanner
         CancellationToken ct = default,
         SchoolNetwork schoolNetwork = SchoolNetwork.Unknown,
         int autoPrefix = DefaultAutoPrefix,
-        int listenSeconds = DefaultListenSeconds)
+        int listenSeconds = DefaultListenSeconds,
+        string? snmpCommunity = null,
+        string? ouiCsvPath = null)
     {
         IPAddress network, mask;
         string label;
@@ -106,13 +114,23 @@ public sealed class Scanner
         // 0) 수동 청취를 여기서 미리 띄운다.
         //    듣기는 CPU·대역폭을 거의 안 쓰고 그냥 기다리는 일이라, 스캔이 끝나기를
         //    기다렸다 시작하면 그 시간이 벽시계에 그대로 더해진다. 겹쳐 돌리면 공짜다.
+        // OUI 목록도 미리 확보해 둔다. 없으면 장비 대부분이 "제조사 미상"으로 나와
+        // 보고서를 읽어도 판단이 안 선다. 분류 직전에만 있으면 되므로 겹쳐서 받는다.
+        var ouiTask = OuiDatabase.EnsureLoadedAsync(ouiCsvPath, ct);
+
         var localSub = NetworkInfo.GetActiveSubnet();
         Task<List<PassiveObservation>>? listenTask = null;
         Task<UpstreamInfo?>? upstreamTask = null;
+        Task<List<ArpSighting>>? arpTask = null;
         if (listenSeconds > 0 && localSub is not null)
         {
             listenTask = PassiveListener.ListenAsync(TimeSpan.FromSeconds(listenSeconds), null, ct);
             upstreamTask = UpstreamProbe.QueryAsync(TimeSpan.FromSeconds(8), ct);
+
+            // 관리자 권한이 있으면 ARP 까지 받아 적는다. 없으면 조용히 건너뛴다.
+            // ARP 는 통신하는 모든 기기가 쓰므로 탐지 폭이 크게 는다.
+            if (ArpCollector.IsAvailable())
+                arpTask = ArpCollector.CollectAsync(TimeSpan.FromSeconds(listenSeconds), null, ct);
         }
 
         // 1~2) DHCP·SSDP·핑 스윕을 함께 시작한다.
@@ -192,7 +210,8 @@ public sealed class Scanner
 
         Mark("PC 이름 조회");
 
-        // 6) 분류
+        // 6) 분류 — 제조사 판정이 걸려 있으므로 OUI 목록을 먼저 기다린다
+        try { report.OuiEntriesLoaded = await ouiTask; } catch { }
         foreach (var h in hosts)
             Classifier.Classify(h, dhcpServers);
 
@@ -226,11 +245,45 @@ public sealed class Scanner
                 try { upstream = await upstreamTask; } catch { /* 폐쇄망이면 없어도 된다 */ }
             }
 
+            List<ArpSighting>? arp = null;
+            if (arpTask is not null)
+            {
+                try { arp = await arpTask; } catch { /* 권한·pktmon 문제면 없이 간다 */ }
+            }
+            if (arp is not null) report.ArpSightings.AddRange(arp);
+
             report.Segregation = SegregationAnalyzer.Analyze(
                 localSub.LocalIp, localSub.Mask, localSub.Gateway,
-                report.Hosts, observations, arpSightings: null, upstream: upstream);
-
+                report.Hosts, observations, arpSightings: arp, upstream: upstream);
+            report.Segregation.ArpCaptureUsed = arp is not null;
             Mark("수동 청취(스캔과 병행)");
+
+            // 8) 찾아낸 문제 장비가 "몇 번 포트"에 있는지까지 좁힌다.
+            //    여기까지 와야 실제로 뽑을 수 있다. 스위치만 그 답을 갖고 있다.
+            if (!string.IsNullOrWhiteSpace(snmpCommunity))
+            {
+                var switches = report.Hosts
+                    .Where(h => h.Category is DeviceCategory.Infrastructure && h.Mac is not null)
+                    .Select(h => h.Ip)
+                    .ToList();
+
+                // 찾을 대상: 무단 공유기, 주소도 못 받은 장비, 남의 대역 장비
+                var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var h in report.Segregation.Routers.Where(h => h.Mac is not null))
+                    wanted.Add(FdbProbe.Normalize(h.Mac!));
+                foreach (var u in report.Segregation.Unaddressed)
+                    wanted.Add(FdbProbe.Normalize(u.Split(' ')[0]));
+                foreach (var a in report.ArpSightings)
+                    wanted.Add(FdbProbe.Normalize(a.Mac));
+
+                if (switches.Count > 0 && wanted.Count > 0)
+                {
+                    progress?.Report(new ScanProgress("스위치 MAC 테이블 조회", 0, switches.Count));
+                    var hits = await FdbProbe.LocateAsync(switches, wanted, snmpCommunity!, progress, ct);
+                    report.Segregation.PortLocations.AddRange(hits);
+                    Mark("스위치 MAC 테이블 조회");
+                }
+            }
         }
 
         report.TotalElapsed = clock.Elapsed;

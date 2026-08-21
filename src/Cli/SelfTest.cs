@@ -75,6 +75,8 @@ internal static class SelfTest
                                                          && v.Action.Contains("수업에 꼭 필요한 경우가 아니면"))),
         };
 
+        checks = checks.Concat(SnmpBerChecks()).ToArray();
+
         Console.WriteLine("── 검증 ──");
         int failed = 0;
         foreach (var (name, ok) in checks)
@@ -85,6 +87,44 @@ internal static class SelfTest
         Console.WriteLine();
         Console.WriteLine(failed == 0 ? "전부 통과" : $"{failed}건 실패");
         return failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// SNMP BER 인코더·디코더 검증. 스위치 SNMP 가 막혀 있어도 여기는 확인할 수 있다.
+    /// 실제로 버그가 숨는 자리(OID 마디 127 초과, 길이 127 초과)를 노려서 만든다.
+    /// </summary>
+    private static IEnumerable<(string Name, bool Ok)> SnmpBerChecks()
+    {
+        // dot1qTpFdbPort + VLAN 4094 + MAC. 4094 는 한 바이트에 안 들어가
+        // base-128 로 두 바이트가 되어야 한다. 여기가 틀리면 FDB 조회가 통째로 실패한다.
+        var mac = new[] { 0x00, 0xBE, 0x43, 0x74, 0xF4, 0xDA };
+        var oid = new[] { 1, 3, 6, 1, 2, 1, 17, 7, 1, 2, 2, 1, 2, 4094 }
+                  .Concat(mac).ToArray();
+
+        var pkt = ScanPhoneNetwork.Probes.Snmp.BuildResponse(
+            "public", oid, ScanPhoneNetwork.Probes.Snmp.TypeInteger, new byte[] { 0x0E });
+        var vb = ScanPhoneNetwork.Probes.Snmp.ParseFirstVarBind(pkt);
+
+        yield return ("SNMP OID 왕복 (VLAN 4094 = 마디 127 초과)",
+            vb is not null && vb.Oid.SequenceEqual(oid));
+        yield return ("SNMP 정수값 디코딩 (포트 14)",
+            vb is not null && vb.AsLong() == 14);
+
+        // 긴 값 — 길이가 127 을 넘으면 길이 필드가 장형(0x81 nn)으로 바뀐다
+        var longText = new string('A', 200);
+        var pkt2 = ScanPhoneNetwork.Probes.Snmp.BuildResponse(
+            "public", new[] { 1, 3, 6, 1, 2, 1, 1, 1, 0 },
+            ScanPhoneNetwork.Probes.Snmp.TypeOctetString,
+            System.Text.Encoding.ASCII.GetBytes(longText));
+        var vb2 = ScanPhoneNetwork.Probes.Snmp.ParseFirstVarBind(pkt2);
+
+        yield return ("SNMP 장형 길이 처리 (200바이트 문자열)",
+            vb2 is not null && vb2.AsString() == longText);
+
+        // 워크 종료 조건: 접두사를 벗어나면 멈춰야 한다
+        yield return ("SNMP 테이블 경계 판정",
+            ScanPhoneNetwork.Probes.Snmp.StartsWith(oid, new[] { 1, 3, 6, 1, 2, 1, 17, 7 })
+            && !ScanPhoneNetwork.Probes.Snmp.StartsWith(oid, new[] { 1, 3, 6, 1, 2, 1, 17, 4 }));
     }
 
     private static DiscoveredHost Pc(string ip, string name)

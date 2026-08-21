@@ -31,7 +31,9 @@ public static class LedgerExporter
             i++;
             sb.Append(i).Append(',')
               .Append(Csv(net)).Append(',')
-              .Append(Csv(CsvExporter.CategoryKo(h.Category))).Append(',')
+              .Append(Csv(h.HotspotSuspected
+                    ? CsvExporter.CategoryKo(h.Category) + " · PC 핫스팟"
+                    : CsvExporter.CategoryKo(h.Category))).Append(',')
               .Append(Csv(LedgerName(h))).Append(',')
               .Append(Csv(h.Ip.ToString())).Append(',')
               .Append(Csv(h.Mac ?? "")).Append(',')

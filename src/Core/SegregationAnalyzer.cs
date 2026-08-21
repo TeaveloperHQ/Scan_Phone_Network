@@ -53,6 +53,15 @@ public sealed class SegregationReport
     /// <summary>혼선이 들어오는 지점으로 지목된 장비(두 대역에 동시에 걸친 인프라).</summary>
     public List<string> CrossLinkPoints { get; } = new();
 
+    /// <summary>스위치 MAC 테이블에서 찾아낸 물리 포트 위치. SNMP 가 열려 있을 때만 채워진다.</summary>
+    public List<Probes.FdbHit> PortLocations { get; } = new();
+
+    /// <summary>
+    /// ARP 까지 받아 적었는가(관리자 권한). 이게 false 면 mDNS·SSDP 를 쓰는 기기만
+    /// 보인 것이라, "안 나왔다"를 "없다"로 읽으면 안 된다.
+    /// </summary>
+    public bool ArpCaptureUsed { get; set; }
+
     public bool AnyForeign => Foreign.Count > 0;
     public bool AnyRogueRouter => Routers.Count > 0 || Unaddressed.Count > 0 || RogueDhcp.Count > 0;
     public bool AnyHotspot => IcsHotspots.Count > 0;
@@ -96,6 +105,19 @@ public static class SegregationAnalyzer
         uint localNet = NetworkInfo.ToUInt(localIp) & NetworkInfo.ToUInt(localMask);
         uint maskv = NetworkInfo.ToUInt(localMask);
         bool IsLocal(IPAddress ip) => (NetworkInfo.ToUInt(ip) & maskv) == localNet;
+
+        // 이 PC 자신의 주소는 남의 망이 아니다.
+        //  - SSDP 응답이 127.0.0.1 에서 오는 경우가 있다. 그대로 두면
+        //    "127.0.0.0/24 라는 남의 대역이 업무망에 있다"는 엉뚱한 보고가 나간다.
+        //  - 교사 PC 에는 VMware·Hyper-V·VPN 가상 어댑터가 흔하다. 그 어댑터의
+        //    대역까지 남의 망으로 세면 멀쩡한 PC 가 혼선 투성이로 보고된다.
+        var selfIps = LocalIPv4Set();
+        bool IsSelfOrLinkLocal(IPAddress ip)
+        {
+            var b = ip.GetAddressBytes();
+            if (b[0] == 127 || (b[0] == 169 && b[1] == 254) || b[0] == 0) return true;
+            return selfIps.Contains(ip.ToString());
+        }
 
         // 게이트웨이 제조사(= 이 망을 누가 물고 있는지)
         if (gateway is not null)
@@ -162,7 +184,7 @@ public static class SegregationAnalyzer
                 continue;
             }
 
-            if (IsLocal(o.SourceIp)) continue;
+            if (IsLocal(o.SourceIp) || IsSelfOrLinkLocal(o.SourceIp)) continue;
 
             var fn = Bucket(o.SourceIp);
             fn.Observations++;
@@ -183,7 +205,7 @@ public static class SegregationAnalyzer
         foreach (var a in arpSightings ?? Array.Empty<ArpSighting>())
         {
             if (!IPAddress.TryParse(a.Ip, out var ip)) continue;
-            if (ip.GetAddressBytes() is [169, 254, ..]) continue;
+            if (IsSelfOrLinkLocal(ip)) continue;
             if (IsLocal(ip)) continue;
 
             var fn = Bucket(ip);
@@ -214,7 +236,13 @@ public static class SegregationAnalyzer
 
         // 3) 혼선 진입점 — 같은 장비가 두 대역에 걸쳐 있으면 거기가 통로다.
         //    MAC 앞 5바이트가 같고 마지막 바이트만 조금 다른 것은 한 장비의 다른 인터페이스다.
-        report.CrossLinkPoints.AddRange(FindCrossLinkPoints(hosts, arpSightings));
+        // 우리 대역 안의 관측치는 비교 대상에서 뺀다. 안 그러면 우리 대역 장비가
+        // 자기 자신과 매칭돼 "이 장비가 두 망을 물고 있다"는 헛보고가 나간다.
+        var foreignSightings = (arpSightings ?? Array.Empty<ArpSighting>())
+            .Where(a => IPAddress.TryParse(a.Ip, out var sip)
+                        && !IsLocal(sip) && !IsSelfOrLinkLocal(sip))
+            .ToList();
+        report.CrossLinkPoints.AddRange(FindCrossLinkPoints(hosts, foreignSightings));
 
         return report;
     }
@@ -255,6 +283,21 @@ public static class SegregationAnalyzer
             }
         }
         return result.Distinct().ToList();
+    }
+
+    /// <summary>이 PC 에 붙어 있는 모든 IPv4 주소(가상 어댑터 포함).</summary>
+    private static HashSet<string> LocalIPv4Set()
+    {
+        var set = new HashSet<string>();
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                foreach (var ua in nic.GetIPProperties().UnicastAddresses)
+                    if (ua.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        set.Add(ua.Address.ToString());
+        }
+        catch { }
+        return set;
     }
 
     private static byte[]? Hex(string mac)
@@ -497,6 +540,19 @@ public static class SegregationAnalyzer
             sb.AppendLine("  해당 없음");
         }
 
+        if (r.PortLocations.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("  [물리 포트 확인됨 — 스위치 MAC 테이블 조회 결과]");
+            foreach (var h in r.PortLocations)
+            {
+                string vlan = h.Vlan is null ? "" : $" · VLAN {h.Vlan}";
+                sb.AppendLine($"     ⛔ {h.Mac}  →  스위치 {h.SwitchIp}  {h.Port}{vlan}");
+            }
+            sb.AppendLine();
+            sb.AppendLine("     이 포트를 내리면 해당 장비가 분리됩니다.");
+        }
+
         if (r.Infrastructure.Count > 0)
         {
             sb.AppendLine();
@@ -518,6 +574,22 @@ public static class SegregationAnalyzer
             sb.AppendLine($"  {string.Join(", ", r.Apipa.Take(10))}");
             sb.AppendLine();
         }
+
+        // ── 이 점검이 얼마나 깊이 봤는지 ──
+        sb.AppendLine("【 점검 깊이 】");
+        if (r.ArpCaptureUsed)
+        {
+            sb.AppendLine("  정밀 점검 — ARP 까지 받아 적었습니다. 통신하는 기기는 거의 다 보입니다.");
+        }
+        else
+        {
+            sb.AppendLine("  기본 점검 — mDNS·DHCP·SSDP 만 들었습니다.");
+            sb.AppendLine("  이 방식은 해당 프로토콜을 쓰는 기기만 보입니다. 조용한 기기는 안 잡힙니다.");
+            sb.AppendLine("  ▸ 관리자 권한으로 실행하면 ARP 까지 봅니다. 실측에서 같은 자리 같은 시간에");
+            sb.AppendLine("    기본 점검은 남의 대역 1개, 정밀 점검은 10개 넘게 찾았습니다.");
+            sb.AppendLine("  ▸ 위에서 아무것도 안 나왔더라도 그것을 '없다'로 읽으면 안 됩니다.");
+        }
+        sb.AppendLine();
 
         sb.AppendLine("══════════════════════════════════════════════════════");
         return sb.ToString();

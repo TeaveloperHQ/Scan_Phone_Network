@@ -51,7 +51,11 @@ public static class CsvExporter
             sb.Append(Csv(h.Ip.ToString())).Append(',');
             sb.Append(Csv(h.Hostname ?? "")).Append(',');
             sb.Append(Csv(h.Mac ?? "")).Append(',');
-            sb.Append(Csv(CategoryKo(h.Category))).Append(',');
+            // 핫스팟은 산 장비가 아니라 PC 가 켜 둔 기능이라 조치가 다르다.
+            // 종류 칸에 "공유기(의심)"만 적히면 엉뚱한 장비를 찾으러 다니게 된다.
+            sb.Append(Csv(h.HotspotSuspected
+                ? CategoryKo(h.Category) + " · PC 핫스팟"
+                : CategoryKo(h.Category))).Append(',');
             sb.Append(h.Confidence).Append(',');
             sb.Append(Csv(VendorModel(h))).Append(',');
             sb.Append(Csv(string.Join(" ", h.OpenPorts))).Append(',');
